@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "regime-networks"
+version = "0.1.0"
+description = "Market-regime detection from dynamic stock-correlation networks"
+readme = "README.md"
+authors = [{ name = "Abbinav Sankar Kailasam" }]
+license = "MIT"
+requires-python = ">=3.12"
+# Bounded to the release series the results were produced with (exact versions in environment.yml, the supported installation):
+# the code relies on gensim's inference internals, yfinance's per-ticker error record and scikit-learn's MDS arguments,
+# and exchange_calendars' holiday data decide which sessions the price screen keeps.
+dependencies = [
+    "numpy>=2.3,<2.4",
+    "pandas>=2.3,<2.4",
+    "scipy>=1.16,<1.17",
+    "networkx>=3.6,<3.7",
+    "scikit-learn>=1.7,<1.8",
+    "hmmlearn>=0.3.3,<0.4",
+    "gensim>=4.4,<4.5",
+    "joblib>=1.5,<1.6",
+    "matplotlib>=3.10,<3.11",
+    "seaborn>=0.13,<0.14",
+    "pillow>=11.1,<12",
+    "yfinance>=1.0,<1.1",
+    "exchange_calendars>=4.13,<4.14",
+    "requests>=2.32,<3",
+    "lxml>=5.3,<6",
+]
+
+[project.optional-dependencies]
+dev = ["pyflakes"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

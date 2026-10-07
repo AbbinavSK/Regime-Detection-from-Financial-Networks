@@ -1,0 +1,35 @@
+# The environment the paper's results were produced in (Windows x86-64, Python 3.13.5): the numerical stack from Anaconda's defaults channel,
+# linked against Intel MKL (the BLAS that gensim, numpy, scipy and scikit-learn call), and from PyPI the packages that channel lacks.
+# bottleneck and numexpr are listed because pandas uses them when they are installed; the package switches pandas' use of numexpr off, whose multithreaded evaluation corrupted results intermittently (README, Reproducibility).
+# Create with: conda env create -f environment.yml
+# On a platform without MKL (e.g. Apple Silicon) drop the blas and mkl lines; results then agree only to floating-point precision (README, Reproducibility).
+name: regime-networks
+channels:
+  - defaults
+dependencies:
+  - python=3.13.5
+  - blas=1.0=mkl
+  - mkl=2025.0.0
+  - numpy=2.3.3
+  - scipy=1.16.2
+  - pandas=2.3.3
+  - bottleneck=1.4.2
+  - numexpr=2.11.0
+  - scikit-learn=1.7.1
+  - threadpoolctl=3.5.0
+  - gensim=4.4.0
+  - smart_open=7.5.0
+  - networkx=3.6.1
+  - joblib=1.5.2
+  - matplotlib=3.10.6
+  - seaborn=0.13.2
+  - pillow=11.1.0
+  - lxml=5.3.0
+  - requests=2.32.4
+  - pip
+  - pip:
+      - hmmlearn==0.3.3
+      - yfinance==1.0
+      - exchange_calendars==4.13.2
+      - pyflakes==3.4.0
+      - -e .

@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this code or data, please cite it as below."
+title: "Regime Detection in Financial Markets using Machine Learning"
+type: software
+# RELEASE: add each author's ORCID as an `orcid: "https://orcid.org/0000-0000-0000-0000"` line.
+authors:
+  - given-names: "Abbinav"
+    family-names: "Sankar Kailasam"
+    affiliation: "University College London"
+  - given-names: "Blaz"
+    family-names: "Zlicar"
+    affiliation: "Abu Dhabi Investment Authority"
+  - given-names: "Fabio"
+    family-names: "Caccioli"
+    affiliation: "University College London"
+license: MIT
+version: 0.1.0
+repository-code: "https://github.com/AbbinavSK/Regime-Detection-from-Financial-Networks"
+date-released: "2026-10-07"
+# RELEASE: uncomment and fill in once an archived release has a DOI:
+# doi: "10.5281/zenodo.NNNNNNN"
+# RELEASE: once the paper is published, add a preferred-citation block pointing to it.
+keywords:
+  - market regimes
+  - correlation networks
+  - graph embedding
+  - Graph2Vec
+  - hidden Markov models

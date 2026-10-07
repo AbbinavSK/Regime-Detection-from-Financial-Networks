@@ -1,0 +1,2 @@
+index_code,requested_start,requested_end,observed_start,observed_end,price_rows,return_rows,retained_stocks,excluded_non_session_rows,excluded_stale_rows
+FTSE250,2001-01-01,2026-09-30,2001-01-02,2026-09-30,6505,6504,101,42,0

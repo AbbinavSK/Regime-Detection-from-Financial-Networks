@@ -1,0 +1,11 @@
+__pycache__/
+.vscode/
+.ipynb_checkpoints/
+CLAUDE.md
+docs/
+outputs/
+*.egg-info/
+build/
+paper/
+.claude/
+.pytest_cache/

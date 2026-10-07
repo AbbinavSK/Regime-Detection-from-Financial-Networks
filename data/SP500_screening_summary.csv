@@ -1,0 +1,2 @@
+index_code,requested_start,requested_end,observed_start,observed_end,price_rows,return_rows,retained_stocks,excluded_non_session_rows,excluded_stale_rows
+SP500,2001-01-01,2026-09-30,2001-01-02,2026-09-30,6474,6473,348,0,0
