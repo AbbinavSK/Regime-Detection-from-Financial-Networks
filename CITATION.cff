@@ -14,7 +14,7 @@ authors:
     family-names: "Caccioli"
     affiliation: "University College London"
 license: MIT
-version: 0.2.0
+version: 0.1.0
 repository-code: "https://github.com/AbbinavSK/Regime-Detection-from-Financial-Networks"
 date-released: "2026-10-18"
 # RELEASE: uncomment and fill in once an archived release has a DOI:
