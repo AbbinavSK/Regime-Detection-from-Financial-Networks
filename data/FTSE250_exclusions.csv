@@ -102,6 +102,7 @@ ticker,stock,reason
 ,IND_RHIM,incomplete_price_history
 ,IND_ROSE,incomplete_price_history
 ,IND_TRN,incomplete_price_history
+,MAT_AMRQ,incomplete_price_history
 ,MAT_ATYM,incomplete_price_history
 ,MAT_HOC,incomplete_price_history
 ,MAT_MNDI,incomplete_price_history
@@ -142,7 +143,6 @@ ticker,stock,reason
 ,FIN_WWH,absolute_log_return_above_0.8
 ,HC_OXB,absolute_log_return_above_0.8
 ,MAT_ELM,absolute_log_return_above_0.8
-,TECH_PINE,absolute_log_return_above_0.8
 ,IND_DATA,flat_price_run
 ,IND_HILS,flat_price_run
 ,IND_XPP,flat_price_run

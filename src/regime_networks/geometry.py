@@ -1,9 +1,7 @@
-from pathlib import Path
-
 import joblib
 import numpy as np
 from sklearn.manifold import MDS
-from sklearn.metrics import pairwise_distances
+from sklearn.metrics import pairwise_distances, silhouette_score
 
 from regime_networks import config
 from regime_networks.grid import grid_tag, bundle_path
@@ -11,14 +9,14 @@ from regime_networks.reduction import transform_reduction
 from regime_networks.regimes import apply_regime_order
 
 
-# Geometry file (distances, MDS coordinates, labels) of one grid point, written by the geometry step and read by its figures, in directory (outputs/geometry/ by default).
-def geometry_path(index_code, window_length, graph_type, directory=None):
-    return Path(config.OUTPUTS_DIR / "geometry" if directory is None else directory) / f"{grid_tag(index_code, window_length, graph_type)}.npz"
+# Geometry file (distances, MDS coordinates, labels) of one grid point in outputs/geometry/, written by the geometry step and read by its figures and tables.
+def geometry_path(index_code, window_length, graph_type):
+    return config.OUTPUTS_DIR / "geometry" / f"{grid_tag(index_code, window_length, graph_type)}.npz"
 
 
 # Load one grid point's frozen Graph2Vec bundle and its train/test raw vectors and OOV rates exactly as the sweep produced them (re-inferring would not reproduce the sweep's regime labels).
-def load_graph2vec_raw(index_code, window_length, graph_type, directory=None):
-    path = bundle_path(index_code, window_length, graph_type, "graph2vec", directory)
+def load_graph2vec_raw(index_code, window_length, graph_type):
+    path = bundle_path(index_code, window_length, graph_type, "graph2vec")
     bundle = joblib.load(path)
 
     if not {"test_raw", "test_oov"} <= set(bundle):
@@ -37,13 +35,6 @@ def prepare_graph2vec(raw):
 # Compute the n_windows x n_windows cosine distance matrix for a prepared vector matrix.
 def distance_matrix(vectors):
     return pairwise_distances(vectors, metric="cosine")
-
-
-# Return (min, median, max) off-diagonal distance from a square distance matrix.
-def offdiag_distance_summary(D):
-    mask = ~np.eye(D.shape[0], dtype=bool)
-    values = D[mask]
-    return float(values.min()), float(np.median(values)), float(values.max())
 
 
 # Fit 2-D non-metric MDS on a precomputed distance matrix and return coordinates plus normalised Kruskal stress-1.
@@ -83,3 +74,16 @@ def bundle_regime_labels(bundle, test_raw, n_train):
 
     all_labels = np.concatenate([train_labels, test_labels])
     return apply_regime_order(all_labels, kmeans_order)
+
+
+# How well a distance matrix separates the regimes and how far test windows lie from training windows: the silhouette of all regimes and of Calm against Transitional (on the symmetrised matrix with a zero diagonal, as the silhouette requires), and the mean distance within training windows, within test windows and between the two.
+def regime_separation(D, regime_labels, n_train):
+    D = (D + D.T) / 2
+    np.fill_diagonal(D, 0.0)
+    labels = np.asarray(regime_labels)
+    calm_transitional = np.isin(labels, [0, 1])
+    is_train = np.arange(len(labels)) < n_train
+    within = lambda mask: float(D[np.ix_(mask, mask)][np.triu_indices(int(mask.sum()), 1)].mean())
+    return {"silhouette_all": float(silhouette_score(D, labels, metric="precomputed")),
+            "silhouette_calm_transitional": float(silhouette_score(D[np.ix_(calm_transitional, calm_transitional)], labels[calm_transitional], metric="precomputed")),
+            "mean_distance_train": within(is_train), "mean_distance_test": within(~is_train), "mean_distance_train_test": float(D[np.ix_(is_train, ~is_train)].mean())}

@@ -29,26 +29,23 @@ def descriptor_features(descriptor, train, test, graph_type, stock_names, index_
     if descriptor == "eigencentrality":
         key = config.GRAPH_KEYS[graph_type]
         stats = pd.DataFrame([window_centrality(G, stock_names) for G in train[key] + test[key]])
-        mean_pr, median_pr = stats["pr"].mean(), stats["pr"].median()
+        mean_pr = stats["pr"].mean()
 
         if mean_pr < config.PR_LOCALISATION_FLAG:
             print(f"  FLAG: {tag} mean PR ({mean_pr:.2f}) is below {config.PR_LOCALISATION_FLAG} out of N -- v1 has localised onto a hub.")
 
         v1 = np.stack(stats["v1"].tolist())
         n_train = len(train["window_dates"])
-        columns = {"mean_pr": mean_pr, "median_pr": median_pr, "mean_lcc_frac": stats["lcc_frac"].mean(),
-                   "modal_argmax_id": stats["argmax_id"].mode().iat[0], "pr_localised_flag": bool(mean_pr < config.PR_LOCALISATION_FLAG)}
+        columns = {"mean_pr": mean_pr, "mean_lcc_frac": stats["lcc_frac"].mean(), "pr_localised_flag": bool(mean_pr < config.PR_LOCALISATION_FLAG)}
         return v1[:n_train], v1[n_train:], columns, {}
 
     stats = pd.DataFrame([window_spectral(C, stock_names, window_length) for C in train["correlation_matrices"] + test["correlation_matrices"]])
     stats.index = pd.DatetimeIndex(pd.to_datetime(list(train["window_dates"]) + list(test["window_dates"])))
     stats.index.name = "window_date"
     stats.to_pickle(spectral_features_path(index_code, window_length, results_directory))
-    n_zero, q = int(stats["n_zero_eigenvalues"].iloc[0]), float(stats["q"].iloc[0])
-    print(f"  {tag}: N={len(stock_names)} T={window_length} q={q:.3f} n_zero_eigenvalues={n_zero}")
     X = stats[SPECTRAL_FEATURE_COLUMNS].to_numpy()
     n_train = len(train["window_dates"])
-    return X[:n_train], X[n_train:], {"n_zero_eigenvalues": n_zero, "q": q}, {}
+    return X[:n_train], X[n_train:], {}, {}
 
 
 # Output folders of one sweep (results tables and transitions, per-window labels, model bundles); a quick smoke run writes under outputs/quick/ so it never overwrites the full sweep.
@@ -84,7 +81,6 @@ def run_grid_point(descriptor, index_code, window_length, graph_type, data, vix,
     transitions_entry = {}
 
     for method_name, method_result in results.items():
-        row[f"{method_name}_crisis_mu"] = float(method_result["mean_mu"][method_result["crisis_id"]])
         train_labels, test_labels = method_result["train_causal_labels"], method_result["test_labels"]
         labels[f"{method_name}_regime"] = apply_regime_order(np.concatenate([train_labels, test_labels]), method_result["order"])
 
@@ -103,8 +99,6 @@ def run_grid_point(descriptor, index_code, window_length, graph_type, data, vix,
 
         train_transitions, train_occupancy = empirical_transitions(train_labels, config.N_REGIMES, method_result["order"])
         test_transitions, test_occupancy = empirical_transitions(test_labels, config.N_REGIMES, method_result["order"])
-        common_ranks = ~(np.isnan(np.diag(train_transitions)) | np.isnan(np.diag(test_transitions)))
-        row[f"{method_name}_regime_persistence_gap"] = float(np.mean(np.abs(np.diag(train_transitions)[common_ranks] - np.diag(test_transitions)[common_ranks]))) if common_ranks.any() else float("nan")
         row[f"{method_name}_regimes_absent_test"] = int(((train_occupancy > 0) & (test_occupancy == 0)).sum())
         transitions_entry[method_name] = {"train": train_transitions, "test": test_transitions, "train_occupancy": train_occupancy, "test_occupancy": test_occupancy}
 
@@ -112,8 +106,7 @@ def run_grid_point(descriptor, index_code, window_length, graph_type, data, vix,
     labels.to_csv(labels_path(index_code, window_length, graph_type, descriptor, directories["labels"]), index=False, lineterminator="\n")
     directories["models"].mkdir(parents=True, exist_ok=True)
     joblib.dump({**bundle_extras, "scaler": scaler, "pca": pca,
-                 "kmeans_model": results["kmeans"]["model"], "kmeans_order": results["kmeans"]["order"], "kmeans_crisis_id": results["kmeans"]["crisis_id"],
-                 "hmm_model": results["hmm"]["model"], "hmm_order": results["hmm"]["order"], "hmm_crisis_id": results["hmm"]["crisis_id"]},
+                 "kmeans_model": results["kmeans"]["model"], "kmeans_order": results["kmeans"]["order"], "hmm_model": results["hmm"]["model"], "hmm_order": results["hmm"]["order"]},
                 bundle_path(index_code, window_length, graph_type, descriptor, directories["models"]))
 
     grid_key = (index_code, window_length) + ((graph_type,) if graph_type else ())

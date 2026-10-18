@@ -6,8 +6,8 @@ from regime_networks import config
 
 
 # Cluster embeddings into regimes with K-means, fit on train only.
-def cluster_kmeans(X_train, X_test, k=config.N_REGIMES):
-    model = KMeans(n_clusters=k, random_state=config.SEED, n_init=config.KMEANS_N_INIT).fit(X_train)
+def cluster_kmeans(X_train, X_test):
+    model = KMeans(n_clusters=config.N_REGIMES, random_state=config.SEED, n_init=config.KMEANS_N_INIT).fit(X_train)
     return model.labels_, model.predict(X_test), model
 
 
@@ -45,27 +45,20 @@ def fit_best_hmm(X_train, k, n_seeds, require_all_states=False):
 
 
 # Fit a Gaussian HMM on training embeddings and return full-sequence training labels (for ranking), causal training and test labels, and the model.
-def cluster_hmm(X_train, X_test, k=config.N_REGIMES, n_seeds=config.HMM_N_SEEDS):
-    best_model = fit_best_hmm(X_train, k, n_seeds, require_all_states=True)
+def cluster_hmm(X_train, X_test, n_seeds=config.HMM_N_SEEDS):
+    best_model = fit_best_hmm(X_train, config.N_REGIMES, n_seeds, require_all_states=True)
     return best_model.predict(X_train), _causal_decode(best_model, X_train), _causal_decode(best_model, X_test, history=X_train), best_model
 
 
-# Rank clusters by mean correlation to find the crisis regime; a cluster with no train windows has no mean to rank, so it raises instead of silently sorting last (as Crisis).
-def fit_regime_order(labels, mu, k=config.N_REGIMES):
-    labels = np.asarray(labels)
-    mu = np.asarray(mu)
-
-    empty = [c for c in range(k) if not np.any(labels == c)]
+# Order of the clusters by their training windows' mean mu, lowest first, so the last cluster is the Crisis regime; a cluster with no train windows has no mean to rank, so it raises instead of silently sorting last (as Crisis).
+def fit_regime_order(labels, mu):
+    labels, mu = np.asarray(labels), np.asarray(mu)
+    empty = [c for c in range(config.N_REGIMES) if not np.any(labels == c)]
 
     if empty:
-        raise ValueError(f"clusters {empty} have no train windows, so they cannot be ranked by mean mu -- the fitted model uses fewer than k={k} regimes on train")
+        raise ValueError(f"clusters {empty} have no train windows, so they cannot be ranked by mean mu -- the fitted model uses fewer than k={config.N_REGIMES} regimes on train")
 
-    cluster_mean_mu = np.array([mu[labels == c].mean() for c in range(k)])
-    order = np.argsort(cluster_mean_mu)
-    rank_of_cluster = np.argsort(order)
-    crisis_id = order[-1]
-
-    return order, rank_of_cluster, crisis_id, cluster_mean_mu
+    return np.argsort([mu[labels == c].mean() for c in range(config.N_REGIMES)])
 
 
 # Relabel cluster IDs into rank order.
@@ -84,9 +77,7 @@ def aic_minimum_location(best_k):
 
 # Compute an empirical transition matrix from a label sequence.
 def empirical_transitions(labels, k, order):
-    rank_of_cluster = np.argsort(order)
-    ranks = rank_of_cluster[np.asarray(labels)]
-
+    ranks = apply_regime_order(labels, order)
     occupancy = np.array([(ranks == r).sum() for r in range(k)])
     counts = np.zeros((k, k))
 
@@ -103,17 +94,11 @@ def empirical_transitions(labels, k, order):
 # Fit K-means and HMM on train, predict both, mu-rank each set of regimes from train only, and compute the HMM's expected dwell 1 / (1 - p_ii) per regime rank; train_causal_labels are the train labels to compare with test labels (identical to train_labels for K-means, whose labels are pointwise).
 def fit_and_rank_regimes(X_train, X_test, train_mu, n_seeds=config.HMM_N_SEEDS):
     kmeans_train_labels, kmeans_test_labels, kmeans_model = cluster_kmeans(X_train, X_test)
-    kmeans_order, kmeans_rank_of_cluster, kmeans_crisis_id, kmeans_mean_mu = fit_regime_order(kmeans_train_labels, train_mu)
+    kmeans_order = fit_regime_order(kmeans_train_labels, train_mu)
 
     hmm_train_labels, hmm_train_causal_labels, hmm_test_labels, hmm_model = cluster_hmm(X_train, X_test, n_seeds=n_seeds)
-    hmm_order, hmm_rank_of_cluster, hmm_crisis_id, hmm_mean_mu = fit_regime_order(hmm_train_labels, train_mu)
+    hmm_order = fit_regime_order(hmm_train_labels, train_mu)
     hmm_dwell = 1.0 / (1.0 - np.diag(hmm_model.transmat_)[hmm_order])
 
-    return {
-        "kmeans": {"model": kmeans_model, "train_labels": kmeans_train_labels, "train_causal_labels": kmeans_train_labels, "test_labels": kmeans_test_labels,
-                   "order": kmeans_order, "rank_of_cluster": kmeans_rank_of_cluster,
-                   "crisis_id": kmeans_crisis_id, "mean_mu": kmeans_mean_mu},
-        "hmm": {"model": hmm_model, "train_labels": hmm_train_labels, "train_causal_labels": hmm_train_causal_labels, "test_labels": hmm_test_labels,
-                "order": hmm_order, "rank_of_cluster": hmm_rank_of_cluster,
-                "crisis_id": hmm_crisis_id, "mean_mu": hmm_mean_mu, "dwell": hmm_dwell},
-    }
+    return {"kmeans": {"model": kmeans_model, "train_labels": kmeans_train_labels, "train_causal_labels": kmeans_train_labels, "test_labels": kmeans_test_labels, "order": kmeans_order, "crisis_id": kmeans_order[-1]},
+            "hmm": {"model": hmm_model, "train_labels": hmm_train_labels, "train_causal_labels": hmm_train_causal_labels, "test_labels": hmm_test_labels, "order": hmm_order, "crisis_id": hmm_order[-1], "dwell": hmm_dwell}}

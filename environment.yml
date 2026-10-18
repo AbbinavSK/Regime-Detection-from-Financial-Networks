@@ -30,6 +30,7 @@ dependencies:
   - pip:
       - hmmlearn==0.3.3
       - yfinance==1.0
+      - platformdirs==4.3.8
       - exchange_calendars==4.13.2
       - pyflakes==3.4.0
       - -e .

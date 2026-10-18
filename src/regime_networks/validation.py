@@ -23,10 +23,9 @@ def split_train_test(data, cutoff=config.TRAIN_TEST_CUTOFF):
 
 
 # Load the VIX close series, failing with guidance on obtaining the data if the file is missing.
-def load_vix(path=None):
-    path = config.VIX_PATH if path is None else path
-    check_data_files([path])
-    return pd.read_csv(path, index_col=0, parse_dates=True).squeeze().sort_index()
+def load_vix():
+    check_data_files([config.VIX_PATH])
+    return pd.read_csv(config.VIX_PATH, index_col=0, parse_dates=True).squeeze().sort_index()
 
 
 # Compute precision, recall, and F1 for a binary prediction.
@@ -45,6 +44,17 @@ def binary_f1(pred, actual):
 def align_to_dates(series, dates):
     dates_idx = pd.DatetimeIndex(pd.to_datetime(dates))
     return series.reindex(series.index.union(dates_idx)).sort_index().ffill().reindex(dates_idx)
+
+
+# The mu-quantile baseline of a model's Crisis regime: a window is Crisis when its mu reaches the training-mu quantile that leaves the model's training Crisis share above it, so the rule calls Crisis as often as the model did in training and uses no information after it.
+def mu_rule_crisis(train_mu, mu, train_crisis_share):
+    return (np.asarray(mu) >= np.quantile(np.asarray(train_mu), 1 - train_crisis_share)).astype(int)
+
+
+# F1 of predicted crisis labels against actual ones when the prediction for window t + lag is matched with the actual state of window t, so a positive lag scores labels that trail the actual series by lag windows; only the overlapping windows count.
+def lagged_f1(pred, actual, lag):
+    pred, actual = np.asarray(pred), np.asarray(actual)
+    return binary_f1(pred[lag:], actual[:len(actual) - lag])[2] if lag >= 0 else binary_f1(pred[:lag], actual[-lag:])[2]
 
 
 # Score predicted crisis labels against a validation series like VIX.

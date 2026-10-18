@@ -1,4 +1,0 @@
-descriptor,grid_size,kmeans_test_point_f1,hmm_test_point_f1,hmm_absorbing_fits,hmm_fits_with_regimes_absent_test
-graph2vec,9,0.31522047451438967,0.2771415894283537,0,0
-eigencentrality,6,0.26480543177836696,0.13119714318475928,0,2
-spectral,3,0.34757236227824456,0.03418803418803417,1,3

@@ -1,6 +1,5 @@
 import heapq
 import pickle
-from pathlib import Path
 
 import numpy as np
 import networkx as nx
@@ -31,16 +30,22 @@ def _above_threshold_pairs(C, threshold):
     return i_idx[above], j_idx[above]
 
 
+# Add to a graph every pair whose correlation is at or above the cutoff and that it does not already join, as a threshold edge weighted by its distance; returns the graph.
+def _add_threshold_edges(G, C, D, stock_names, threshold):
+    i_idx, j_idx = _above_threshold_pairs(C, threshold)
+
+    for i, j in zip(i_idx, j_idx):
+        if not G.has_edge(stock_names[i], stock_names[j]):
+            G.add_edge(stock_names[i], stock_names[j], weight=float(D[i, j]), edge_type="threshold")
+
+    return G
+
+
 # Threshold graph, an edge for every pair whose correlation is at or above the cutoff.
 def threshold_graph(C, D, stock_names, threshold):
     G = nx.Graph()
     G.add_nodes_from(stock_names)
-    i_idx, j_idx = _above_threshold_pairs(C, threshold)
-
-    for i, j in zip(i_idx, j_idx):
-        G.add_edge(stock_names[i], stock_names[j], weight=float(D[i, j]), edge_type="threshold")
-
-    return G
+    return _add_threshold_edges(G, C, D, stock_names, threshold)
 
 
 # Minimum spanning tree of the distance matrix, as an nx.Graph with distance weights; scipy reads a zero distance as a missing edge, so a pair with correlation 1 (identical returns in the window) would silently give a spanning tree that is not minimum, and raises instead.
@@ -60,14 +65,7 @@ def mst_graph(D, stock_names):
 
 # MST backbone augmented with every correlation edge above the threshold.
 def mst_threshold_graph(C, D, stock_names, threshold):
-    G = mst_graph(D, stock_names)
-    i_idx, j_idx = _above_threshold_pairs(C, threshold)
-
-    for i, j in zip(i_idx, j_idx):
-        if not G.has_edge(stock_names[i], stock_names[j]):
-            G.add_edge(stock_names[i], stock_names[j], weight=float(D[i, j]), edge_type="threshold")
-
-    return G
+    return _add_threshold_edges(mst_graph(D, stock_names), C, D, stock_names, threshold)
 
 
 # Triangulated Maximally Filtered Graph (Massara/Aste).
@@ -147,14 +145,7 @@ def tmfg_graph(C, D, stock_names):
 
 # TMFG backbone unioned with all above-threshold edges (additive; floors at 3(n-2)).
 def tmfg_threshold_graph(C, D, stock_names, threshold):
-    G = tmfg_graph(C, D, stock_names)
-    a_idx, b_idx = _above_threshold_pairs(C, threshold)
-
-    for a, b in zip(a_idx, b_idx):
-        if not G.has_edge(stock_names[a], stock_names[b]):
-            G.add_edge(stock_names[a], stock_names[b], weight=float(D[a, b]), edge_type="threshold")
-
-    return G
+    return _add_threshold_edges(tmfg_graph(C, D, stock_names), C, D, stock_names, threshold)
 
 
 # Build every window's networks at CORRELATION_THRESHOLD: clip the correlation matrix, compute mu and the Mantegna distance, then the threshold, MST-threshold and TMFG-threshold graphs.
@@ -190,14 +181,14 @@ def build_networks(correlation_matrices, stock_names, window_length, window_date
     }
 
 
-# Path of one index's pickled network data for one window length, in directory (outputs/ by default).
-def networks_path(index_code, window_length, directory=None):
-    return Path(config.OUTPUTS_DIR if directory is None else directory) / f"{index_code}_network_data_{window_length}d.pkl"
+# Path of one index's pickled network data for one window length, in outputs/.
+def networks_path(index_code, window_length):
+    return config.OUTPUTS_DIR / f"{index_code}_network_data_{window_length}d.pkl"
 
 
 # Pickle one index/window-length's network data.
-def save_networks(data, directory=None):
-    path = networks_path(data["index_code"], data["window_length"], directory)
+def save_networks(data):
+    path = networks_path(data["index_code"], data["window_length"])
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(path, "wb") as f:
@@ -205,8 +196,8 @@ def save_networks(data, directory=None):
 
 
 # Load one index/window-length's pickled network data.
-def load_networks(index_code, window_length, directory=None):
-    with open(networks_path(index_code, window_length, directory), "rb") as f:
+def load_networks(index_code, window_length):
+    with open(networks_path(index_code, window_length), "rb") as f:
         return pickle.load(f)
 
 

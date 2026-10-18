@@ -41,13 +41,13 @@ def grid_position(index_code=None, window_length=None, graph_type=None, descript
     return tuple(order.index(value) if value in order else len(order) for value, order in ((descriptor, config.DESCRIPTORS), (index_code, config.INDEX_CODES), (window_length, config.WINDOW_LENGTHS), (graph_type, config.GRAPH_TYPES)))
 
 
-# Write a results table of grid-point rows after replacing any earlier rows for the same grid points, in full-run grid order, so a partial re-run keeps every other grid point's rows and writes the same file as a clean run.
+# Write a results table of grid-point rows after replacing any earlier rows for the same grid points, in full-run grid order and with the new rows' columns, so a partial re-run keeps every other grid point's rows and writes the same file as a clean run.
 def merge_grid_results(path, rows):
     table = pd.DataFrame(rows)
     keys = [column for column in ("index_code", "window_length", "graph_type") if column in table]
 
     if path.exists():
-        previous = pd.read_csv(path, float_precision="round_trip")
+        previous = pd.read_csv(path, float_precision="round_trip").reindex(columns=table.columns)
         table = pd.concat([previous[~previous.set_index(keys).index.isin(table.set_index(keys).index)], table], ignore_index=True)
 
     table.iloc[sorted(range(len(table)), key=lambda i: grid_position(**table.iloc[i][keys].to_dict()))].to_csv(path, index=False, lineterminator="\n")

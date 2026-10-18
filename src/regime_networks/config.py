@@ -22,8 +22,8 @@ VIX_INDEX = PRIMARY_INDEX
 INDEX_COMPONENTS = {"FTSE350": ["FTSE100", "FTSE250"]}
 MARKET_CALENDARS = {"SP500": "XNYS", "Nikkei225": "XTKS", "FTSE100": "XLON", "FTSE250": "XLON", "FTSE350": "XLON", "CSI300": "XSHG"}
 
-# Named market events (date -> name): episodes of the Crisis regime are named after the nearest event (portfolio analysis, where EXCLUDED_EPISODE is matched by name), and figures annotate them.
-CRISIS_EVENTS = {"2000-03-01": "Dot-com", "2008-09-15": "GFC", "2011-08-01": "Euro Debt", "2020-03-01": "COVID", "2022-06-01": "Rate Shock"}
+# Named market events (date -> name), annotated on the regime figures.
+CRISIS_EVENTS = {"2008-09-15": "GFC", "2011-08-01": "Euro Debt", "2020-03-01": "COVID", "2022-06-01": "Rate Shock"}
 
 # ---- Price download (prices and constituent lists). Tickers that return no prices are re-downloaded one at a time, waiting between rounds; a failure whose provider message contains a transient marker stops the download instead of dropping the stock.
 DOWNLOAD_BATCH_SIZE = 50
@@ -76,9 +76,10 @@ HMM_COVARIANCE_TYPE = "diag"
 HMM_N_ITER = 200
 HMM_TOL = 1e-4
 
-# ---- Out-of-sample protocol and VIX validation.
+# ---- Out-of-sample protocol and VIX validation. The lag of the Crisis regime behind VIX stress is the shift, in windows, that maximises its F1 over all windows within VIX_LAG_WINDOWS (positive: the regime trails the VIX).
 TRAIN_TEST_CUTOFF = "2019-12-31"
 VIX_CRISIS_THRESHOLD = 30.0
+VIX_LAG_WINDOWS = range(-15, 31)
 PR_LOCALISATION_FLAG = 10
 
 # ---- Headline configuration (primary market, T=132, MST-threshold, Graph2Vec, K-means), the one the analyses below single out; it was chosen after full-sample results (test period included) had been seen, which is why every grid point is reported. Its grid point and file names come from regime_networks.grid (headline_grid_point).
@@ -93,7 +94,6 @@ QUICK_HMM_SEEDS = 3
 # ---- Network topology by detected regime: every window's three constructions, each grouped by the regimes its own headline-descriptor, headline-method model detected, summarised per regime over train, test and all windows; the window whose mu is nearest its regime's median mu is the one drawn.
 TOPOLOGY_INDEX = PRIMARY_INDEX
 TOPOLOGY_WINDOW_LENGTH = HEADLINE_WINDOW[0]
-CLIQUE_ENUM_CAP = 20000
 
 # ---- Embedding geometry: the market it is computed for and the MDS restarts.
 GEOMETRY_INDEX = PRIMARY_INDEX
@@ -104,23 +104,24 @@ MODEL_SELECTION_K_RANGE = range(2, 10)
 MODEL_SELECTION_HMM_SEEDS = 10
 MODEL_SELECTION_N_JOBS = 4
 
-# ---- Doc2Vec seed robustness (scripts/seed_robustness.py, run by hand, not a pipeline step): every market's headline grid point refitted with Graph2Vec seeded by SEED (checked to reproduce the saved regimes) and by each of these seeds, the scaler, PCA and K-means unchanged, and each seed's K-means regimes compared with SEED's. Fits run over SEED_ROBUSTNESS_N_JOBS processes; each is single-threaded and seeded, so results do not depend on the number.
+# ---- Doc2Vec seed robustness (scripts/seed_robustness.py, a pipeline step after model selection): every market's headline grid point refitted with Graph2Vec seeded by SEED (checked to reproduce the saved regimes) and by each of these seeds, the scaler, PCA and K-means unchanged, and each seed's K-means regimes compared with SEED's. Fits run over SEED_ROBUSTNESS_N_JOBS processes; each is single-threaded and seeded, so results do not depend on the number.
 SEED_ROBUSTNESS_SEEDS = (1, 2, 3, 4, 5)
 SEED_ROBUSTNESS_N_JOBS = 4
 
-# ---- Portfolio backtest, run for every market: each strategy's per-window equity exposure applies from the next trading day to an equal-weight, never-rebalanced sleeve of that market's cleaned constituents, in local currency, idle capital earning a constant cash rate; returns are gross of transaction costs. PORTFOLIO_STRATEGIES hold a fixed exposure per headline regime rank.
-PORTFOLIO_STRATEGIES = {"Fully invested": (1.0, 1.0, 1.0), "Regime-timed": (1.0, 0.5, 0.0)}
-# Volatility-targeting strategies, each holding min(VOL_TARGET_EXPOSURE_CAP, target / forecast volatility): the headline regime forecast (soft K-means state times the training transition matrix, times each regime's training volatility), the trailing volatility over TRAILING_VOL_SESSIONS, and the same regime forecast built from a K-means fit on mu alone.
-REGIME_FORECAST_STRATEGY = "Regime-forecast vol target"
-TRAILING_VOL_STRATEGY = "Trailing-vol target"
-MU_ONLY_STRATEGY = "Mu-only vol target"
+# ---- Portfolio backtest, run for every market and every construction of PORTFOLIO_GRAPH_TYPES at the headline window length (each with its own Graph2Vec K-means model) over the full test period: each strategy's per-window equity exposure applies from the next trading day to an equal-weight, never-rebalanced sleeve of that market's cleaned constituents, in local currency, idle capital earning a constant cash rate. PORTFOLIO_STRATEGIES hold a fixed exposure per regime rank (Calm, Transitional, Crisis); buy-and-hold is the fully invested benchmark.
+PORTFOLIO_GRAPH_TYPES = GRAPH_TYPES
+BUY_AND_HOLD = "Buy-and-hold"
+PORTFOLIO_STRATEGIES = {BUY_AND_HOLD: (1.0, 1.0, 1.0), "Regime-timed": (1.0, 0.5, 0.0)}
+# The regime-forecast strategy holds 1 minus the forecast probability that the next window is Crisis (the soft K-means state times the training transition matrix).
+REGIME_FORECAST_STRATEGY = "Regime-forecast"
+# Each timed strategy's benchmark holds that strategy's average daily exposure over the test period throughout, separating the value of timing from that of holding less equity.
+TIMED_STRATEGIES = ["Regime-timed", REGIME_FORECAST_STRATEGY]
+CONSTANT_EXPOSURE_STRATEGIES = {name: f"Constant exposure ({name})" for name in TIMED_STRATEGIES}
 # Every strategy in output order, the one list downstream steps iterate over.
-PORTFOLIO_STRATEGY_NAMES = [*PORTFOLIO_STRATEGIES, REGIME_FORECAST_STRATEGY, TRAILING_VOL_STRATEGY, MU_ONLY_STRATEGY]
-# Target of the volatility-targeting strategies, from the risk proxy's training volatility: "calm" (in the headline model's Calm regime) or "long_run" (over all training sessions).
-VOL_TARGET = "calm"
-VOL_TARGET_EXPOSURE_CAP = 1.0
-TRAILING_VOL_SESSIONS = 63
-# Regime forecast: the soft-state temperature is searched over np.logspace(*FORECAST_TEMPERATURE_MULTIPLES) multiples of the median squared distance to the nearest centroid, and log scores floor a probability at FORECAST_PROBABILITY_FLOOR.
+PORTFOLIO_STRATEGY_NAMES = [*PORTFOLIO_STRATEGIES, REGIME_FORECAST_STRATEGY, *CONSTANT_EXPOSURE_STRATEGIES.values()]
+# Transaction cost per unit of exposure change (10 basis points, one-way), charged on the day the new exposure applies; the first day pays for the purchase from cash. Metrics are reported gross and net of it.
+TRANSACTION_COST = 0.001
+# Soft-state regime forecast (the soft K-means state times the training transition matrix): the temperature is searched over np.logspace(*FORECAST_TEMPERATURE_MULTIPLES) multiples of the median squared distance to the nearest centroid, and log scores floor a probability at FORECAST_PROBABILITY_FLOOR.
 FORECAST_TEMPERATURE_MULTIPLES = (-3, 2, 101)
 FORECAST_PROBABILITY_FLOOR = 1e-6
 # Annual cash rate per market: the mean of the monthly short-term rate over the test period, January 2020 to September 2026 (retrieved 4 October 2026). S&P 500: US 3-month Treasury bill, secondary market (Federal Reserve H.15 RIFSGFSM03_N.M, FRED TB3MS). Nikkei 225 and CSI 300: OECD 3-month interbank rates (FRED IR3TIB01JPM156N, IR3TIB01CNM156N), to July 2026, the latest month published. FTSE 350: SONIA monthly average (Bank of England IUMSOIA), as no UK 3-month series covers the period.
@@ -129,19 +130,17 @@ RISK_FREE_RATES_ANNUAL = {"SP500": 0.028572, "Nikkei225": 0.002465, "FTSE350": 0
 MIN_EQUITY_RETURN_STD = 0.001
 # Annualisation uses each market's observed sessions per year (portfolio.sessions_per_year), measured against this calendar-year length in days.
 CALENDAR_DAYS_PER_YEAR = 365.25
-EPISODE_EVENT_MAX_DAYS = 90
-EXCLUDED_EPISODE = "COVID"
-# Circular block bootstrap of each strategy's daily test-period returns (blocks of BOOTSTRAP_BLOCK_LENGTH sessions that wrap from the last day to the first, so every day is equally likely to be drawn); all strategies resample the same days, and the reported quantiles are an interquartile range, not a confidence interval.
-BOOTSTRAP_BLOCK_LENGTH = 132
-BOOTSTRAP_N_RESAMPLES = 1000
-BOOTSTRAP_QUANTILES = (0.25, 0.75)
 
-# ---- Paper tables: the decimals printed in the LaTeX fragments (the cross-market table compares the headline configuration's test-period persistence).
+# ---- Paper tables: the decimals printed in the LaTeX fragments.
 TABLE_DECIMALS = 3
 
-# ---- Figures: presentation animations (one frame per window) and export resolution for manuscript figures and bulk per-grid-point dashboards.
-ANIMATION_WINDOW_LENGTH = HEADLINE_WINDOW[0]
-ANIMATION_FPS = 12
-ANIMATION_DPI = 100
+# ---- Figures: export resolution of the manuscript figures.
 FIGURE_DPI = 600
-DASHBOARD_DPI = 150
+# The regime figures the paper and its supplement show, one image file per figure under results/figures/regimes/, each a list of its panels from top to bottom: (market, construction or None for the spectral descriptor, descriptor, clustering method, panel kind), all at the headline window length. The kinds are a timeline against mu, the VIX overlay (S&P 500 only) and the pair of training and test transition matrices.
+REGIME_FIGURES = {f"{PRIMARY_INDEX}_{HEADLINE_WINDOW[0]}d_{HEADLINE_GRAPH_TYPE}/{HEADLINE_DESCRIPTOR}_kmeans_timeline_vix.png": [(PRIMARY_INDEX, HEADLINE_GRAPH_TYPE, HEADLINE_DESCRIPTOR, "kmeans", kind) for kind in ("timeline", "vix_overlay")],
+                  f"{PRIMARY_INDEX}_{HEADLINE_WINDOW[0]}d_{HEADLINE_GRAPH_TYPE}/{HEADLINE_DESCRIPTOR}_kmeans_transitions.png": [(PRIMARY_INDEX, HEADLINE_GRAPH_TYPE, HEADLINE_DESCRIPTOR, "kmeans", "transitions")],
+                  f"{PRIMARY_INDEX}_{HEADLINE_WINDOW[0]}d_{HEADLINE_GRAPH_TYPE}/{HEADLINE_DESCRIPTOR}_hmm_timeline_vix.png": [(PRIMARY_INDEX, HEADLINE_GRAPH_TYPE, HEADLINE_DESCRIPTOR, "hmm", kind) for kind in ("timeline", "vix_overlay")],
+                  f"{PRIMARY_INDEX}_{HEADLINE_WINDOW[0]}d/descriptor_timelines.png": [(PRIMARY_INDEX, HEADLINE_GRAPH_TYPE, HEADLINE_DESCRIPTOR, "kmeans", "timeline"), (PRIMARY_INDEX, HEADLINE_GRAPH_TYPE, "eigencentrality", "kmeans", "timeline"), (PRIMARY_INDEX, None, "spectral", "kmeans", "timeline")],
+                  f"cross_market/timelines_{HEADLINE_WINDOW[0]}d_{HEADLINE_GRAPH_TYPE}.png": [(index_code, HEADLINE_GRAPH_TYPE, HEADLINE_DESCRIPTOR, "kmeans", "timeline") for index_code in INDEX_CODES if index_code != PRIMARY_INDEX]}
+# The embedding-geometry figures of GEOMETRY_INDEX, each (window length, its rows from top to bottom), every row one panel per construction: self-similarity heatmaps, and MDS maps coloured by regime, by date, by edge count and by out-of-vocabulary rate (the share of a window's WL features absent from the trained vocabulary).
+GEOMETRY_FIGURES = [(HEADLINE_WINDOW[0], ("selfsimilarity", "regime")), (HEADLINE_WINDOW[0], ("date", "edgecount", "oov")), *((length, ("selfsimilarity", "regime", "date", "edgecount")) for length in WINDOW_LENGTHS if length != HEADLINE_WINDOW[0])]

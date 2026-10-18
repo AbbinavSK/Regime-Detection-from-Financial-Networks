@@ -5,7 +5,6 @@ import pandas as pd
 
 from regime_networks import config
 from regime_networks.networks import load_networks
-from regime_networks.grid import merge_grid_results
 from regime_networks.validation import split_train_test
 from regime_networks import geometry
 
@@ -38,17 +37,6 @@ def _graph2vec_entry(train, test, dates, n_train, window_length, graph_type):
             "distance": geometry.distance_matrix(prepared)}
 
 
-# Build one outputs/embedding_geometry_results.csv row for one (window_length, graph_type) from its geometry entry and fitted MDS stress.
-def _summary_row(entry, stress, window_length, graph_type):
-    mn, med, mx = geometry.offdiag_distance_summary(entry["distance"])
-    return {"index_code": config.GEOMETRY_INDEX, "window_length": window_length, "graph_type": graph_type,
-            "descriptor": "graph2vec", "metric": "cosine",
-            "n_windows": entry["distance"].shape[0], "n_train": entry["n_train"], "stress": float(stress),
-            "offdiag_dist_min": mn, "offdiag_dist_median": med, "offdiag_dist_max": mx,
-            "mean_oov_rate": float(np.mean(entry["oov"])), "median_oov_rate": float(np.median(entry["oov"])),
-            "mean_edge_count": float(np.mean(entry["edge_counts"])), "median_edge_count": float(np.median(entry["edge_counts"]))}
-
-
 # Save everything the geometry figures need for one (window_length, graph_type): distances, MDS coordinates and stress, regime labels, edge counts, OOV rates, window dates and the train size.
 def _save_geometry(entry, coords, stress, window_length, graph_type):
     path = geometry.geometry_path(config.GEOMETRY_INDEX, window_length, graph_type)
@@ -57,9 +45,9 @@ def _save_geometry(entry, coords, stress, window_length, graph_type):
                         edge_counts=np.array(entry["edge_counts"]), oov=np.array(entry["oov"]), dates=np.array(pd.to_datetime(entry["dates"]).strftime("%Y-%m-%d"), dtype="U10"), n_train=entry["n_train"])
 
 
-# Run every graph_type for one already-loaded window_length: fit 2-D MDS on each cosine-distance matrix, save the geometry file and return the results rows.
+# Run every graph_type for one already-loaded window_length: fit 2-D MDS on each cosine-distance matrix and save the geometry file; returns the constructions that failed.
 def _run_window_length(window_length, train, test, dates, n_train, graph_types):
-    rows, failed = [], []
+    failed = []
 
     for graph_type in graph_types:
         try:
@@ -71,29 +59,22 @@ def _run_window_length(window_length, train, test, dates, n_train, graph_types):
 
         coords, stress = geometry.fit_mds(entry["distance"])
         _save_geometry(entry, coords, stress, window_length, graph_type)
-        rows.append(_summary_row(entry, stress, window_length, graph_type))
+        print(f"  {config.GEOMETRY_INDEX} T={window_length} {graph_type}: MDS stress {stress:.3f}")
 
-    return rows, failed
+    return failed
 
 
-# Run the embedding-geometry analysis for every window length and construction, merging each window length's rows into outputs/embedding_geometry_results.csv as it goes; returns True only if every combination succeeded.
+# Run the embedding-geometry analysis for every window length and construction into outputs/geometry/; returns True only if every combination succeeded.
 def main(window_lengths=None, graph_types=None):
     config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     window_lengths = config.WINDOW_LENGTHS if window_lengths is None else window_lengths
     graph_types = config.GRAPH_TYPES if graph_types is None else graph_types
-    results_path = config.OUTPUTS_DIR / "embedding_geometry_results.csv"
-
     failures = []
 
     for window_length in window_lengths:
         train, test, dates, n_train = _load_split(window_length)
-        rows, failed = _run_window_length(window_length, train, test, dates, n_train, graph_types)
+        failed = _run_window_length(window_length, train, test, dates, n_train, graph_types)
         del train, test
-
-        if rows:
-            merge_grid_results(results_path, rows)
-            print(f"merged {len(rows)} rows into {results_path}")
-
         failures += [f"{window_length}d/{graph_type}" for graph_type in failed]
 
     if failures:

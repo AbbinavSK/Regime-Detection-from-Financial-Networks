@@ -1,4 +1,5 @@
 ticker,stock,reason
+VYLR,CST_VYLR,"no_close_prices_returned: possibly delisted; no price data found  (1d 2001-01-01 -> 2026-10-01) (Yahoo error = ""Data doesn't exist for startDate = 978325200, endDate = 1790827200"")"
 ,CD_ABNB,incomplete_price_history
 ,CD_APTV,incomplete_price_history
 ,CD_CMG,incomplete_price_history
@@ -26,10 +27,9 @@ ticker,stock,reason
 ,CS_NFLX,incomplete_price_history
 ,CS_NWS,incomplete_price_history
 ,CS_NWSA,incomplete_price_history
-,CS_PSKY,incomplete_price_history
 ,CS_RDDT,incomplete_price_history
+,CS_SKYD,incomplete_price_history
 ,CS_TMUS,incomplete_price_history
-,CS_WBD,incomplete_price_history
 ,CST_BG,incomplete_price_history
 ,CST_DG,incomplete_price_history
 ,CST_KDP,incomplete_price_history
@@ -133,10 +133,10 @@ ticker,stock,reason
 ,IT_SNDK,incomplete_price_history
 ,IT_STX,incomplete_price_history
 ,IT_TEL,incomplete_price_history
+,IT_TWLO,incomplete_price_history
 ,IT_WDAY,incomplete_price_history
 ,MAT_AMCR,incomplete_price_history
 ,MAT_CF,incomplete_price_history
-,MAT_CTVA,incomplete_price_history
 ,MAT_DOW,incomplete_price_history
 ,MAT_LYB,incomplete_price_history
 ,MAT_SW,incomplete_price_history

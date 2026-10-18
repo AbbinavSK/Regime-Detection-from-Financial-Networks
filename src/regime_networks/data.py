@@ -20,9 +20,9 @@ def exclusion_reasons() -> dict[str, str]:
     return {"nonpositive": "nonpositive_price", "incomplete": "incomplete_price_history", "jump": f"absolute_log_return_above_{config.MAX_ABS_LOG_RETURN}", "flat_run": "flat_price_run"}
 
 
-# Path of one index's cleaned price panel, the file every analysis reads, in directory (data/ by default).
-def cleaned_prices_path(index_code: str, directory: Path | str | None = None) -> Path:
-    return Path(config.DATA_DIR if directory is None else directory) / f"{index_code}_AdjClose_Cleaned.csv"
+# Path of one index's cleaned price panel in data/, the file every analysis reads.
+def cleaned_prices_path(index_code: str) -> Path:
+    return config.DATA_DIR / f"{index_code}_AdjClose_Cleaned.csv"
 
 
 # Order sector-prefixed stock columns deterministically, refusing any ticker code that appears twice (under one sector label or two).
@@ -244,9 +244,8 @@ def screen_price_panel(raw_prices: pd.DataFrame, index_code: str, start_date: st
 
 
 # Download, validate and report one index price panel, saving raw and cleaned prices plus the constituent snapshot, per-stock exclusion reasons and screening summary.
-def run_index(index_code: str, ticker_map: Mapping[str, str], start_date: str, end_date_inclusive: str,
-              directory: Path | str | None = None) -> pd.DataFrame:
-    directory = Path(config.DATA_DIR if directory is None else directory)
+def run_index(index_code: str, ticker_map: Mapping[str, str], start_date: str, end_date_inclusive: str) -> pd.DataFrame:
+    directory = config.DATA_DIR
     directory.mkdir(parents=True, exist_ok=True)
 
     pd.DataFrame({"ticker": list(ticker_map), "stock": list(ticker_map.values())}).to_csv(directory / f"{index_code}_constituents.csv", index=False, lineterminator="\n")
@@ -254,7 +253,7 @@ def run_index(index_code: str, ticker_map: Mapping[str, str], start_date: str, e
     raw.to_csv(directory / f"{index_code}_AdjClose_Raw.csv", index=True, lineterminator="\n")
 
     cleaned, quality_exclusions, summary = screen_price_panel(raw, index_code, start_date, end_date_inclusive)
-    cleaned.to_csv(cleaned_prices_path(index_code, directory), index=True, lineterminator="\n")
+    cleaned.to_csv(cleaned_prices_path(index_code), index=True, lineterminator="\n")
 
     exclusions = pd.concat([download_exclusions, quality_exclusions], ignore_index=True)
     exclusions.to_csv(directory / f"{index_code}_exclusions.csv", index=False, lineterminator="\n")
@@ -272,18 +271,17 @@ def run_index(index_code: str, ticker_map: Mapping[str, str], start_date: str, e
 
 
 # Intersect and validate already-clean sub-index panels as one final panel, saving its cleaned prices, exclusion reasons and screening summary.
-def combine_index_panels(index_code: str, panels: Sequence[pd.DataFrame], start_date: str,
-                         end_date_inclusive: str, directory: Path | str | None = None) -> pd.DataFrame:
+def combine_index_panels(index_code: str, panels: Sequence[pd.DataFrame], start_date: str, end_date_inclusive: str) -> pd.DataFrame:
     if len(panels) < 2:
         raise ValueError("At least two sub-index panels are required for combination.")
 
     combined = pd.concat(panels, axis=1, join="inner")
     cleaned, exclusions, summary = screen_price_panel(combined, index_code, start_date, end_date_inclusive)
 
-    directory = Path(config.DATA_DIR if directory is None else directory)
+    directory = config.DATA_DIR
     directory.mkdir(parents=True, exist_ok=True)
 
-    cleaned.to_csv(cleaned_prices_path(index_code, directory), index=True, lineterminator="\n")
+    cleaned.to_csv(cleaned_prices_path(index_code), index=True, lineterminator="\n")
     exclusions.to_csv(directory / f"{index_code}_exclusions.csv", index=False, lineterminator="\n")
     summary.to_csv(directory / f"{index_code}_screening_summary.csv", index=False, lineterminator="\n")
     print(f"{index_code}: {cleaned.shape[1]} stocks after date intersection")
@@ -294,7 +292,7 @@ def combine_index_panels(index_code: str, panels: Sequence[pd.DataFrame], start_
 
 
 # Download and save a finite, positive VIX close series on provider dates.
-def download_vix(start_date: str, end_date_inclusive: str, directory: Path | str | None = None) -> pd.Series:
+def download_vix(start_date: str, end_date_inclusive: str) -> pd.Series:
     raw = yf.download(tickers="^VIX", start=start_date, end=_exclusive_end_date(end_date_inclusive),
                       auto_adjust=False, progress=False, threads=False, timeout=config.DOWNLOAD_TIMEOUT_SECONDS)
     close = _extract_close_prices(raw, ["^VIX"])
@@ -315,10 +313,8 @@ def download_vix(start_date: str, end_date_inclusive: str, directory: Path | str
     vix.index.name = "Date"
     vix.name = "^VIX"
 
-    directory = Path(config.DATA_DIR if directory is None else directory)
-    directory.mkdir(parents=True, exist_ok=True)
-
-    vix.to_csv(directory / "VIX_Close.csv", header=True, lineterminator="\n")
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    vix.to_csv(config.VIX_PATH, header=True, lineterminator="\n")
     print(f"VIX: {len(vix)} prices, {vix.index.min():%Y-%m-%d} to {vix.index.max():%Y-%m-%d}")
     return vix
 

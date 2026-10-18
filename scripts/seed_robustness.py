@@ -23,15 +23,15 @@ def seed_regimes(train_graphs, test_graphs, train_mu, seed):
     test_raw, _ = g2v.infer(test_graphs)
     X_train, scaler, pca = fit_reduction(train_raw)
     train_labels, test_labels, _ = cluster_kmeans(X_train, transform_reduction(test_raw, scaler, pca))
-    order = fit_regime_order(train_labels, train_mu)[0]
+    order = fit_regime_order(train_labels, train_mu)
     return apply_regime_order(np.concatenate([train_labels, test_labels]), order), pca.n_components_
 
 
-# Agreement of one seed's regime ranks with the reference ranks: the share of windows with the same regime (all, train, test), the adjusted Rand index of the two partitions, the Jaccard index of their Crisis windows, and the seed's test-period Crisis share.
+# Agreement of one seed's regime ranks with the reference ranks: the share of windows with the same regime (all and test), the adjusted Rand index of the two partitions, the Jaccard index of their Crisis windows, and the seed's test-period Crisis share.
 def compare_regimes(ranks, reference, n_train):
     same = ranks == reference
     crisis, reference_crisis = ranks == config.N_REGIMES - 1, reference == config.N_REGIMES - 1
-    return {"agreement_all": same.mean(), "agreement_train": same[:n_train].mean(), "agreement_test": same[n_train:].mean(), "adjusted_rand_index": adjusted_rand_score(reference, ranks),
+    return {"agreement_all": same.mean(), "agreement_test": same[n_train:].mean(), "adjusted_rand_index": adjusted_rand_score(reference, ranks),
             "crisis_jaccard": (crisis & reference_crisis).sum() / (crisis | reference_crisis).sum(), "test_crisis_share": crisis[n_train:].mean()}
 
 
@@ -80,6 +80,6 @@ def main(n_jobs=None):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Refit every market's headline grid point with several Graph2Vec (Doc2Vec) seeds and compare its K-means regimes with the canonical ones into outputs/seed_robustness.csv (run by hand, not a pipeline step).")
+    parser = argparse.ArgumentParser(description="Refit every market's headline grid point with several Graph2Vec (Doc2Vec) seeds and compare its K-means regimes with the canonical ones into outputs/seed_robustness.csv.")
     parser.add_argument("--n-jobs", type=int, default=config.SEED_ROBUSTNESS_N_JOBS, help=f"Worker processes for the fits (default: {config.SEED_ROBUSTNESS_N_JOBS}); each fit is single-threaded and seeded, so results do not depend on it")
     main(parser.parse_args().n_jobs)

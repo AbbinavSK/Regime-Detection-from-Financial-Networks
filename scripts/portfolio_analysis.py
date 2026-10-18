@@ -6,30 +6,35 @@ import pandas as pd
 
 from regime_networks import config
 from regime_networks.data import check_data_files, cleaned_prices_path, file_sha256, manifest_status
-from regime_networks.grid import headline_grid_point, labels_path, bundle_path
+from regime_networks.grid import grid_tag, labels_path, bundle_path
 from regime_networks.reduction import transform_reduction
 from regime_networks.regimes import apply_regime_order
-from regime_networks.portfolio import (equal_weight_drift_returns, sessions_per_year, daily_risk_free, portfolio_return, carry_decomposition, headline_metrics, exposure_stats,
-                                       block_bootstrap, regime_schedule, build_forecasts, mean_log_score, mean_brier, holding_period_volatility, qlike, vol_target_exposure,
-                                       regime_spans, label_episodes)
+from regime_networks.portfolio import (equal_weight_drift_returns, sessions_per_year, daily_risk_free, portfolio_return, transaction_costs, headline_metrics, exposure_stats, regime_schedule,
+                                       fit_regime_forecast, forecast_next_regime)
 
 
-# The headline labels and frozen K-means model of one market with its train and test embeddings, refusing a non-K-means headline or a bundle that no longer reproduces the saved regimes.
-def load_headline_model(index_code):
+# The Graph2Vec grid point of one market and construction at the headline window length.
+def cell_grid_point(index_code, graph_type):
+    return index_code, config.HEADLINE_WINDOW[0], graph_type, "graph2vec"
+
+
+# The labels and frozen K-means model of one market and construction with its train and test embeddings, refusing a non-K-means headline method or a bundle that no longer reproduces the saved regimes.
+def load_cell_model(index_code, graph_type):
     if config.HEADLINE_METHOD != "kmeans":
-        raise ValueError(f"the portfolio's regime forecast is built on the headline K-means model, so it needs HEADLINE_METHOD = 'kmeans', not {config.HEADLINE_METHOD!r}")
+        raise ValueError(f"the portfolio's regime forecast is built on the K-means model, so it needs HEADLINE_METHOD = 'kmeans', not {config.HEADLINE_METHOD!r}")
 
-    labels = pd.read_csv(labels_path(*headline_grid_point(index_code)), parse_dates=["window_date"]).set_index("window_date")
-    bundle = joblib.load(bundle_path(*headline_grid_point(index_code)))
+    grid_point = cell_grid_point(index_code, graph_type)
+    labels = pd.read_csv(labels_path(*grid_point), parse_dates=["window_date"]).set_index("window_date")
+    bundle = joblib.load(bundle_path(*grid_point))
 
     if not {"g2v", "test_raw"} <= set(bundle):
-        raise ValueError(f"{index_code}: the regime forecast needs the headline Graph2Vec bundle's stored train and test embeddings, which this bundle lacks; re-run scripts/run_sweeps.py")
+        raise ValueError(f"{grid_tag(*grid_point[:3])}: the regime forecast needs the Graph2Vec bundle's stored train and test embeddings, which this bundle lacks; re-run scripts/run_sweeps.py")
 
     model, order = bundle["kmeans_model"], bundle["kmeans_order"]
     X_train, X_test = (transform_reduction(raw, bundle["scaler"], bundle["pca"]) for raw in (bundle["g2v"].train_vectors, bundle["test_raw"]))
 
     if not (np.array_equal(model.predict(X_train), model.labels_) and np.array_equal(apply_regime_order(np.concatenate([model.labels_, model.predict(X_test)]), order), labels["kmeans_regime"].to_numpy())):
-        raise ValueError(f"{index_code}: the frozen K-means model no longer reproduces the saved regimes from its bundle's embeddings -- the bundle or labels are stale; re-run scripts/run_sweeps.py")
+        raise ValueError(f"{grid_tag(*grid_point[:3])}: the frozen K-means model no longer reproduces the saved regimes from its bundle's embeddings -- the bundle or labels are stale; re-run scripts/run_sweeps.py")
 
     return labels, model, order, X_train, X_test
 
@@ -49,16 +54,13 @@ def _sleeve_diagnostics(index_code, path, prices, returns, equity_return):
                       f"  equal-weight sleeve daily return std: {equity_return.std():.3e} (floor MIN_EQUITY_RETURN_STD={config.MIN_EQUITY_RETURN_STD})"])
 
 
-# Backtest every strategy over one market's test period and score its forecasts, stopping with diagnostics on missing or non-positive prices or degenerate sleeve returns.
-def backtest_market(index_code):
-    labels, model, order, X_train, X_test = load_headline_model(index_code)
-    is_test = (labels["split"] == "test").to_numpy()
-    test_dates, ranks = labels.index[is_test], labels[f"{config.HEADLINE_METHOD}_regime"].to_numpy()[is_test]
+# One market's test-period trading days after the first test window's end date, its buy-and-hold sleeve returns, sessions per year and daily cash rate, stopping with diagnostics on missing or non-positive prices or degenerate sleeve returns.
+def market_sleeve(index_code, first_test_window_end):
     path = cleaned_prices_path(index_code)
     check_data_files([path])
     prices = pd.read_csv(path, index_col="Date", parse_dates=["Date"]).sort_index()
     stock_returns = prices.pct_change(fill_method=None).iloc[1:]
-    days = stock_returns.index[stock_returns.index > test_dates[0]]
+    days = stock_returns.index[stock_returns.index > first_test_window_end]
     returns = stock_returns.loc[days]
     equity_return = equal_weight_drift_returns(returns)
 
@@ -69,76 +71,62 @@ def backtest_market(index_code):
         raise ValueError(f"{index_code}: the equal-weight sleeve's daily returns are degenerate (standard deviation not above MIN_EQUITY_RETURN_STD):\n{_sleeve_diagnostics(index_code, path, prices, returns, equity_return)}")
 
     periods_per_year = sessions_per_year(days)
-    risk_free = daily_risk_free(config.RISK_FREE_RATES_ANNUAL[index_code], periods_per_year)
-    risk_proxy = stock_returns.mean(axis=1)
-    regime_forecasts, vol_forecasts, target_vol, fit = build_forecasts(labels, model, order, X_train, X_test, risk_proxy, periods_per_year)
+    print(f"{index_code}: {len(days)} test days ({days[0].date()} to {days[-1].date()}), {returns.shape[1]} stocks, {periods_per_year:.1f} sessions a year, cash rate {config.RISK_FREE_RATES_ANNUAL[index_code]:.2%}")
+    return days, equity_return, periods_per_year, daily_risk_free(config.RISK_FREE_RATES_ANNUAL[index_code], periods_per_year)
+
+
+# Backtest every strategy for one market and construction over the full test period, gross and net of transaction costs: the fixed-exposure strategies from the current regime, the regime forecast from the soft state times the training transition matrix, and a constant exposure at each timed strategy's average.
+def backtest_cell(index_code, graph_type, sleeve):
+    days, equity_return, periods_per_year, risk_free = sleeve
+    labels, model, order, X_train, X_test = load_cell_model(index_code, graph_type)
+    is_test = (labels["split"] == "test").to_numpy()
+    test_dates, ranks = labels.index[is_test], labels["kmeans_regime"].to_numpy()[is_test]
+    fit = fit_regime_forecast(X_train, labels["kmeans_regime"].to_numpy()[~is_test], model, order)
+    forecast = forecast_next_regime(X_test, model, order, fit["temperature"], fit["P"])
 
     daily = regime_schedule(pd.Series(np.array(config.REGIME_NAMES)[ranks], index=test_dates, name="regime"), days).assign(equity_return=equity_return)
-    window_exposure = pd.DataFrame({**{name: np.array(levels)[ranks] for name, levels in config.PORTFOLIO_STRATEGIES.items()}, **{name: vol_target_exposure(vol, target_vol) for name, vol in vol_forecasts.items()}}, index=test_dates)
+    window_exposure = pd.DataFrame({**{name: np.array(levels)[ranks] for name, levels in config.PORTFOLIO_STRATEGIES.items()}, config.REGIME_FORECAST_STRATEGY: 1 - forecast[:, -1]}, index=test_dates)
     exposure = window_exposure.reindex(daily["window_end_date"]).set_axis(days, axis=0)
-    strategy_returns, exposure_rows = {}, []
+
+    for timed, constant in config.CONSTANT_EXPOSURE_STRATEGIES.items():
+        exposure[constant] = exposure[timed].mean()
+
+    cell = {"index_code": index_code, "graph_type": graph_type}
+    metric_rows, exposure_rows = [], []
 
     for name in config.PORTFOLIO_STRATEGY_NAMES:
-        strategy_returns[name] = daily[f"{name} return"] = portfolio_return(exposure[name], equity_return, risk_free)
-        daily[f"{name} exposure"] = exposure[name]
-        exposure_rows.append({"index_code": index_code, "strategy": name, **exposure_stats(exposure[name]), **carry_decomposition(exposure[name], equity_return, risk_free)})
+        gross = portfolio_return(exposure[name], equity_return, risk_free)
+        net = gross - transaction_costs(exposure[name])
+        daily[f"{name} exposure"], daily[f"{name} gross return"], daily[f"{name} return"] = exposure[name], gross, net
+        metric_rows += [{**cell, "costs": costs, "strategy": name, "days": len(days), "sessions_per_year": periods_per_year, **headline_metrics(returns, risk_free, periods_per_year)} for costs, returns in (("gross", gross), ("net", net))]
+        exposure_rows.append({**cell, "strategy": name, **exposure_stats(exposure[name])})
 
-    crisis_spans = regime_spans(daily["regime"], config.REGIME_NAMES[-1])
-    episode_names = label_episodes(crisis_spans, config.CRISIS_EVENTS)
-    episode_rows, crisis_days = [], pd.DatetimeIndex([])
-
-    for (start, end), episode in zip(crisis_spans, episode_names):
-        mask = (days >= start) & (days <= end)
-        crisis_days = crisis_days.append(days[mask])
-        episode_rows.append({"index_code": index_code, "episode": episode, "start": start.date(), "end": end.date(), "days": int(mask.sum()), **{name: (1 + ret[mask]).prod() - 1 for name, ret in strategy_returns.items()}})
-
-    outside = ~days.isin(crisis_days)
-    episode_rows.append({"index_code": index_code, "episode": "Outside Crisis episodes", "days": int(outside.sum()), **{name: (1 + ret[outside]).prod() - 1 for name, ret in strategy_returns.items()}})
-
-    samples = {"full": np.ones(len(days), dtype=bool)}
-    excluded_spans = [span for span, episode in zip(crisis_spans, episode_names) if episode == config.EXCLUDED_EPISODE or episode.startswith(f"{config.EXCLUDED_EPISODE} (")]
-
-    if excluded_spans:
-        samples[f"excluding_{config.EXCLUDED_EPISODE}"] = ~np.logical_or.reduce([(days >= start) & (days <= end) for start, end in excluded_spans])
-        print(f"{index_code}: {config.EXCLUDED_EPISODE} episode excluded from the second sample: {', '.join(f'{start.date()} to {end.date()}' for start, end in excluded_spans)}, {int((~samples[f'excluding_{config.EXCLUDED_EPISODE}']).sum())} days")
-    else:
-        print(f"{index_code}: no Crisis episode labelled {config.EXCLUDED_EPISODE} in the test period, so only the full sample is reported")
-
-    metric_rows = [{"index_code": index_code, "sample": sample, "strategy": name, "days": int(keep.sum()), "sessions_per_year": periods_per_year, **headline_metrics(ret[keep], risk_free, periods_per_year)} for sample, keep in samples.items() for name, ret in strategy_returns.items()]
-
-    bootstrap_rows = []
-
-    for name, ret in strategy_returns.items():
-        quantiles = block_bootstrap(ret, risk_free, periods_per_year).quantile(list(config.BOOTSTRAP_QUANTILES))
-        bootstrap_rows += [{"index_code": index_code, "strategy": name, "metric": metric, **{f"q{round(100 * q)}": quantiles.loc[q, metric] for q in config.BOOTSTRAP_QUANTILES}} for metric in quantiles.columns]
-
-    next_regime, switches = ranks[1:], ranks[1:] != ranks[:-1]
-    realised_vol = holding_period_volatility(risk_proxy, daily["window_end_date"], test_dates, periods_per_year)
-    score_rows = [{"index_code": index_code, "forecast": name, "windows": windows, "n_windows": int(keep.sum()), "log_score": mean_log_score(forecast[:-1][keep], next_regime[keep]), "brier": mean_brier(forecast[:-1][keep], next_regime[keep])}
-                  for name, forecast in regime_forecasts.items() for windows, keep in (("all", np.ones(len(next_regime), dtype=bool)), ("before a switch", switches)) if keep.any()]
-    score_rows += [{"index_code": index_code, "forecast": name, "windows": "all", "n_windows": int(np.isfinite(realised_vol).sum()), "qlike": qlike(vol, realised_vol)} for name, vol in vol_forecasts.items()]
-    print(f"{index_code}: {len(test_dates)} test windows, {len(days)} test days ({days[0].date()} to {days[-1].date()}), {returns.shape[1]} stocks, {periods_per_year:.1f} sessions a year, cash rate {config.RISK_FREE_RATES_ANNUAL[index_code]:.2%}")
-
-    for name, model_fit in (("headline", fit), ("mu-only", fit["mu"])):
-        print(f"{index_code}: {name} soft-state temperature {model_fit['multiple']:.4g} x the median squared centroid distance" + (" (AT THE EDGE of the searched grid)" if model_fit["at_edge"] else "")
-              + f"; training volatility {dict(zip(config.REGIME_NAMES, model_fit['regime_vol'].round(4).tolist()))}")
-
-    print(f"{index_code}: target ({config.VOL_TARGET}) {target_vol:.4f}; risk proxy and sleeve correlate {np.corrcoef(equity_return, risk_proxy.loc[days])[0, 1]:.3f} over the test period")
-    return daily, {"metrics": metric_rows, "exposure_carry": exposure_rows, "episodes": episode_rows, "bootstrap": bootstrap_rows, "forecast_scores": score_rows}
+    forecast_by_regime = pd.Series(forecast[:, -1]).groupby(ranks).mean().reindex(range(config.N_REGIMES))
+    print(f"{index_code} {graph_type}: soft-state temperature {fit['multiple']:.4g} x the median squared centroid distance" + (" (AT THE EDGE of the searched grid)" if fit["at_edge"] else "")
+          + f"; training P(Transitional -> Crisis) {fit['P'][1, -1]:.3f}; mean test forecast P(Crisis next) by current regime {dict(zip(config.REGIME_NAMES, forecast_by_regime.round(3).tolist()))}")
+    return daily, metric_rows, exposure_rows, {**cell, "temperature_multiple": fit["multiple"], "temperature_at_edge": fit["at_edge"], **{f"P_{a.lower()}_{b.lower()}": fit["P"][i, j] for i, a in enumerate(config.REGIME_NAMES) for j, b in enumerate(config.REGIME_NAMES)},
+                                               **{f"test_forecast_crisis_given_{name.lower()}": forecast_by_regime[r] for r, name in enumerate(config.REGIME_NAMES)}}
 
 
-# Backtest every market, saving each market's daily series to outputs/portfolio/{INDEX}_daily.csv and the metric, exposure and carry, episode, bootstrap and forecast-score tables of all markets to outputs/portfolio/.
+# Backtest every market under every construction, saving the headline construction's daily series to outputs/portfolio/{tag}_daily.csv (the figures' input) and the metric, exposure and forecast-fit tables of all cells to outputs/portfolio/.
 def main():
     folder = config.OUTPUTS_DIR / "portfolio"
     folder.mkdir(parents=True, exist_ok=True)
-    tables = {}
+    tables = {"metrics": [], "exposure": [], "forecast_fit": []}
 
     for index_code in config.INDEX_CODES:
-        daily, market_tables = backtest_market(index_code)
-        daily.rename_axis("date").to_csv(folder / f"{index_code}_daily.csv", lineterminator="\n")
+        labels = pd.read_csv(labels_path(*cell_grid_point(index_code, config.PORTFOLIO_GRAPH_TYPES[0])), parse_dates=["window_date"])
+        sleeve = market_sleeve(index_code, labels.loc[labels["split"] == "test", "window_date"].iloc[0])
 
-        for name, rows in market_tables.items():
-            tables[name] = tables.get(name, []) + rows
+        for graph_type in config.PORTFOLIO_GRAPH_TYPES:
+            daily, metric_rows, exposure_rows, fit_row = backtest_cell(index_code, graph_type, sleeve)
+
+            if graph_type == config.HEADLINE_GRAPH_TYPE:
+                daily.rename_axis("date").to_csv(folder / f"{grid_tag(*cell_grid_point(index_code, graph_type)[:3])}_daily.csv", lineterminator="\n")
+
+            tables["metrics"] += metric_rows
+            tables["exposure"] += exposure_rows
+            tables["forecast_fit"].append(fit_row)
 
     for name, rows in tables.items():
         table = pd.DataFrame(rows)
@@ -147,5 +135,5 @@ def main():
 
 
 if __name__ == "__main__":
-    argparse.ArgumentParser(description="Backtest the fixed-exposure and volatility-targeting strategies on every market's test period, and score the regime and volatility forecasts, into outputs/portfolio/.").parse_args()
+    argparse.ArgumentParser(description="Backtest buy-and-hold, the regime-timed and regime-forecast strategies and their constant-exposure benchmarks, gross and net of transaction costs, for every market and construction over the full test period into outputs/portfolio/.").parse_args()
     main()

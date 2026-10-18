@@ -29,11 +29,11 @@ def leading_eigenvector(adjacency):
     return v1 / np.linalg.norm(v1)
 
 
-# Eigenvector centrality of one window's graph on its largest connected component, with its participation ratio, its most central stock and the component's share of the stocks.
+# Eigenvector centrality of one window's graph on its largest connected component, with its participation ratio and the component's share of the stocks.
 def window_centrality(G, stock_names):
     lcc_subgraph, node_order = largest_connected_component(G, stock_names)
     v1 = leading_eigenvector(nx.to_numpy_array(lcc_subgraph, nodelist=node_order, weight=None))
-    return {"v1": v1, "pr": float(1.0 / (v1 ** 4).sum()), "argmax_id": node_order[int(np.argmax(v1))], "lcc_frac": len(node_order) / len(stock_names)}
+    return {"v1": v1, "pr": float(1.0 / (v1 ** 4).sum()), "lcc_frac": len(node_order) / len(stock_names)}
 
 
 # Participation ratio of a vector (unit-L2-normalised first), mirroring the eigenvector-centrality PR on a different object.
@@ -44,19 +44,13 @@ def participation_ratio(v):
 
 # Spectral and random-matrix features of one window's correlation matrix, with the Marchenko-Pastur edge scaled by the variance the market mode leaves, 1 - lambda_1/N.
 def window_spectral(C, stock_names, window_length):
-    N = len(stock_names)
-    T = window_length
-    q = T / N
-
+    N, T = len(stock_names), window_length
     lambdas, V = np.linalg.eigh(C)
     order = np.argsort(lambdas)[::-1]
     lambdas, V = lambdas[order], V[:, order]
     mp_edge = (1 - lambdas[0] / N) * (1 + np.sqrt(N / T)) ** 2
 
-    n_nonzero = min(N, T - 1)
-    n_zero_eigenvalues = N - n_nonzero
-    lambdas_nonzero = lambdas[:n_nonzero]
-
+    lambdas_nonzero = lambdas[:min(N, T - 1)]
     bulk = lambdas_nonzero[lambdas_nonzero < mp_edge]
 
     if bulk.size > 1:
@@ -77,7 +71,4 @@ def window_spectral(C, stock_names, window_length):
         "spectral_entropy_bulk": spectral_entropy_bulk,
         "pr_corr_v1": participation_ratio(V[:, 0]),
         "pr_corr_v2": participation_ratio(V[:, 1]),
-        "n_zero_eigenvalues": int(n_zero_eigenvalues),
-        "q": float(q),
-        "mp_edge": float(mp_edge),
     }

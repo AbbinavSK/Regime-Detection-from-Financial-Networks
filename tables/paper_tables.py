@@ -5,15 +5,17 @@ import pandas as pd
 
 from regime_networks import config
 from regime_networks.data import NO_PRICES_REASON, DOWNLOAD_ERROR_REASON, exclusion_reasons, cleaned_prices_path
-from regime_networks.grid import grid_position, headline_grid_point, labels_path
+from regime_networks.grid import grid_position, headline_grid_point, labels_path, descriptor_grid
 from regime_networks.regimes import empirical_transitions, aic_minimum_location
+from regime_networks.validation import binary_f1, mu_rule_crisis, lagged_f1
 from regime_networks.portfolio import HEADLINE_METRICS
+from regime_networks.geometry import geometry_path, regime_separation
 
 SCREEN_COLUMNS = {"nonpositive": "nonpositive_price", "incomplete": "incomplete_price_history", "jump": "return_jump", "flat_run": "flat_run"}
-DIAGNOSTIC_STATISTICS = ["density", "avg_clustering", "degree_assortativity", "nmi_sector"]
+PROFILE_STATISTICS = ["density", "avg_clustering", "degree_assortativity", "sector_modularity"]
 
 
-# Initial constituents, removals under each screening reason and final stock count per market; a composite index sums its components' records with its own post-intersection screen, and unaccounted should be zero.
+# Initial constituents, removals under each screening reason and final stock count per market; a composite index sums its components' records with its own post-intersection screen, and the step stops if a market's constituents, removals and retained stocks do not add up.
 def data_summary():
     screen_columns = {reason: SCREEN_COLUMNS[rule] for rule, reason in exclusion_reasons().items()}
     rows = []
@@ -25,7 +27,11 @@ def data_summary():
         reasons = exclusions["reason"].map(lambda reason: "download_failed" if reason.startswith((NO_PRICES_REASON, DOWNLOAD_ERROR_REASON)) else screen_columns[reason])
         final = len(pd.read_csv(cleaned_prices_path(index_code), nrows=0).columns) - 1
         counts = {column: int((reasons == column).sum()) for column in ["download_failed", *SCREEN_COLUMNS.values()]}
-        rows.append({"index_code": index_code, "initial_n": initial, **counts, "final_n": final, "unaccounted": initial - len(exclusions) - final})
+
+        if initial - len(exclusions) - final != 0:
+            raise ValueError(f"{index_code}: {initial} constituents minus {len(exclusions)} removals is not the {final} stocks retained -- the constituent, exclusion and cleaned-price files in data/ disagree; download the market again")
+
+        rows.append({"index_code": index_code, "initial_n": initial, **counts, "final_n": final})
 
     return pd.DataFrame(rows)
 
@@ -47,13 +53,6 @@ def experimental_grid():
     return pd.DataFrame(rows)
 
 
-# Out-of-sample VIX F1 of the S&P 500 Crisis regime for every Graph2Vec construction and window length, flagging HMM fits with an absorbing state or with regimes absent from the test windows.
-def sp500_f1():
-    results = pd.read_csv(config.OUTPUTS_DIR / "graph2vec_sweep_results.csv")
-    results = results[results["index_code"] == config.VIX_INDEX].assign(order=lambda df: df["graph_type"].map(config.GRAPH_TYPES.index), hmm_absorbing=_absorbing_hmm)
-    return results.sort_values(["order", "window_length"])[["graph_type", "window_length", "kmeans_test_point_f1", "hmm_test_point_f1", "hmm_absorbing", "hmm_regimes_absent_test"]]
-
-
 # Test-period empirical self-transition probability (in windows) and occupancy of each regime per market and clustering method, for the headline configuration.
 def cross_market_persistence():
     rows = []
@@ -70,43 +69,124 @@ def cross_market_persistence():
     return pd.DataFrame(rows)
 
 
-# Mean out-of-sample S&P 500 VIX F1 over each descriptor's grid, with the grid size and how many of its HMM fits (all kept in the mean) have an absorbing state or regimes absent from the test windows.
-def descriptor_f1():
+# Out-of-sample S&P 500 VIX F1 of every descriptor at every construction and window length, under both clustering methods, with each HMM fit's degeneracy flags; one row per grid point, in grid order, with no ranking.
+def descriptor_benchmark():
     rows = []
 
     for descriptor in config.DESCRIPTORS:
         results = pd.read_csv(config.OUTPUTS_DIR / f"{descriptor}_sweep_results.csv")
-        sp500 = results[results["index_code"] == config.VIX_INDEX]
-        rows.append({"descriptor": descriptor, "grid_size": len(sp500), "kmeans_test_point_f1": sp500["kmeans_test_point_f1"].mean(), "hmm_test_point_f1": sp500["hmm_test_point_f1"].mean(),
-                     "hmm_absorbing_fits": int(_absorbing_hmm(sp500).sum()), "hmm_fits_with_regimes_absent_test": int((sp500["hmm_regimes_absent_test"] > 0).sum())})
+        sp500 = results[results["index_code"] == config.VIX_INDEX].assign(graph_type=lambda df: df["graph_type"] if "graph_type" in df else None, hmm_absorbing=_absorbing_hmm)
+        rows += [{"descriptor": descriptor, "graph_type": row.graph_type if isinstance(row.graph_type, str) else "--", "window_length": row.window_length, "kmeans_test_point_f1": row.kmeans_test_point_f1,
+                  "hmm_test_point_f1": row.hmm_test_point_f1, "hmm_absorbing": bool(row.hmm_absorbing), "hmm_regimes_absent_test": row.hmm_regimes_absent_test} for row in sp500.itertuples()]
+
+    table = pd.DataFrame(rows)
+    position = [grid_position(config.VIX_INDEX, t, None if g == "--" else g, d) for d, g, t in zip(table["descriptor"], table["graph_type"], table["window_length"])]
+    return table.iloc[sorted(range(len(table)), key=position.__getitem__)].reset_index(drop=True)
+
+
+# Agreement of each Graph2Vec K-means Crisis regime with the mu-quantile rule matched to its training Crisis share, over all and over test windows, per market, window length and construction; for the S&P 500 also both test VIX F1 scores.
+def mu_rule_agreement():
+    rows = []
+
+    for index_code, window_length, graph_type in descriptor_grid("graph2vec"):
+        labels = pd.read_csv(labels_path(index_code, window_length, graph_type, "graph2vec"))
+        is_train, is_test = (labels["split"] == "train").to_numpy(), (labels["split"] == "test").to_numpy()
+        crisis = (labels["kmeans_regime"] == config.N_REGIMES - 1).astype(int).to_numpy()
+        rule = mu_rule_crisis(labels["mu"].to_numpy()[is_train], labels["mu"].to_numpy(), crisis[is_train].mean())
+        row = {"index_code": index_code, "window_length": window_length, "graph_type": graph_type, "agreement_all": (crisis == rule).mean(), "agreement_test": (crisis[is_test] == rule[is_test]).mean()}
+
+        if index_code == config.VIX_INDEX:
+            vix_crisis = (labels["vix"] > config.VIX_CRISIS_THRESHOLD).astype(int).to_numpy()[is_test]
+            row.update({"model_test_f1": binary_f1(crisis[is_test], vix_crisis)[2], "mu_rule_test_f1": binary_f1(rule[is_test], vix_crisis)[2]})
+
+        rows.append(row)
 
     return pd.DataFrame(rows)
 
 
-# Per-regime medians of density, average clustering, degree assortativity and sector NMI under each construction (grouped by its own model's regimes), over training, test and all windows, with the number of windows.
-def network_diagnostics():
+# Training and test K-means transition structure of every market's Graph2Vec regimes under each construction at the headline window length: the direct Calm-to-Crisis and Crisis-to-Calm probabilities and every regime's self-transition probability.
+def transition_structure():
+    rows = []
+
+    for index_code in config.INDEX_CODES:
+        for graph_type in config.GRAPH_TYPES:
+            labels = pd.read_csv(labels_path(index_code, config.HEADLINE_WINDOW[0], graph_type, "graph2vec"))
+
+            for split in ("train", "test"):
+                P = empirical_transitions(labels.loc[labels["split"] == split, "kmeans_regime"].to_numpy(), config.N_REGIMES, np.arange(config.N_REGIMES))[0]
+                rows.append({"index_code": index_code, "graph_type": graph_type, "split": split, "calm_to_crisis": P[0, -1], "crisis_to_calm": P[-1, 0],
+                             **{f"{name.lower()}_persistence": P[r, r] for r, name in enumerate(config.REGIME_NAMES)}, "transitional_to_crisis": P[1, -1]})
+
+    return pd.DataFrame(rows)
+
+
+# How far each S&P 500 Graph2Vec K-means Crisis regime trails VIX stress, per window length and construction: the F1 over all windows without a lag, and the lag in windows (and sessions, and as a share of the window) that maximises it within VIX_LAG_WINDOWS, with that F1.
+def vix_lag():
+    rows = []
+
+    for _, window_length, graph_type in descriptor_grid("graph2vec", [config.VIX_INDEX]):
+        labels = pd.read_csv(labels_path(config.VIX_INDEX, window_length, graph_type, "graph2vec"))
+        pred, actual = (labels["kmeans_regime"] == config.N_REGIMES - 1).astype(int).to_numpy(), (labels["vix"] > config.VIX_CRISIS_THRESHOLD).astype(int).to_numpy()
+        scores = {lag: lagged_f1(pred, actual, lag) for lag in config.VIX_LAG_WINDOWS}
+        best, shift = max(scores, key=scores.get), dict(config.WINDOW_CONFIGS)[window_length]
+        rows.append({"window_length": window_length, "graph_type": graph_type, "f1_no_lag": scores[0], "best_lag_windows": best, "best_lag_sessions": best * shift, "best_lag_share_of_window": best * shift / window_length, "f1_at_best_lag": scores[best]})
+
+    return pd.DataFrame(rows)
+
+
+# The regime profile: per-regime medians over all windows of density, average clustering, degree assortativity and sector modularity, for every market, window length and construction (grouped by its own model's regimes), with the number of windows.
+def regime_profile():
     summary = pd.read_csv(config.OUTPUTS_DIR / "network_topology" / "regime_summary.csv")
-    keys = ["graph_type", "split", "regime"]
-    medians = summary[summary["statistic"].isin(DIAGNOSTIC_STATISTICS)].pivot_table(index=keys, columns="statistic", values="median", sort=False)
-    table = summary.loc[summary["statistic"] == DIAGNOSTIC_STATISTICS[0], [*keys, "n_windows"]].merge(medians.reset_index(), on=keys, how="left")
-    return table[[*keys, "n_windows", *DIAGNOSTIC_STATISTICS]].rename(columns={statistic: f"median_{statistic}" for statistic in DIAGNOSTIC_STATISTICS})
+    summary = summary[summary["split"] == "all"]
+    keys = ["index_code", "window_length", "graph_type", "regime"]
+    medians = summary[summary["statistic"].isin(PROFILE_STATISTICS)].pivot_table(index=keys, columns="statistic", values="median", sort=False)
+    table = summary.loc[summary["statistic"] == PROFILE_STATISTICS[0], [*keys, "n_windows"]].merge(medians.reset_index(), on=keys, how="left")
+    return table[[*keys, "n_windows", *PROFILE_STATISTICS]].rename(columns={statistic: f"median_{statistic}" for statistic in PROFILE_STATISTICS})
 
 
-# Mean Graph2Vec OOV rate over all windows, by window length (rows) and construction (columns).
-def geometry_oov():
-    results = pd.read_csv(config.OUTPUTS_DIR / "embedding_geometry_results.csv")
-    table = results.pivot(index="window_length", columns="graph_type", values="mean_oov_rate")
-    return table[[g for g in config.GRAPH_TYPES if g in table.columns]].reset_index()
+# How well the Graph2Vec embedding separates the regimes, and how far its test windows lie from its training windows, per window length and construction of GEOMETRY_INDEX: silhouettes on the cosine distances of the geometry step and mean distances within and between the two periods.
+def geometry_separation():
+    rows = []
+
+    for window_length in config.WINDOW_LENGTHS:
+        for graph_type in config.GRAPH_TYPES:
+            with np.load(geometry_path(config.GEOMETRY_INDEX, window_length, graph_type)) as saved:
+                rows.append({"window_length": window_length, "graph_type": graph_type, "stress": float(saved["stress"]), **regime_separation(saved["distance"], saved["regime_labels"], int(saved["n_train"]))})
+
+    return pd.DataFrame(rows)
 
 
-# Headline portfolio metrics per market and strategy, over the full test period and with the excluded episode removed.
+# Sensitivity of each market's headline regimes to the Graph2Vec seed alone, from the seed check (outputs/seed_robustness.csv): the minimum and maximum over the robustness seeds of test agreement, adjusted Rand index, Crisis Jaccard index and test Crisis share against the SEED fit, and its test Crisis share; for the S&P 500 also the test VIX F1.
+def seed_robustness():
+    results = pd.read_csv(config.OUTPUTS_DIR / "seed_robustness.csv")
+    reference = results[results["reference"]].set_index("index_code")
+    rows = []
+
+    for index_code, seeds in results[~results["reference"]].groupby("index_code", sort=False):
+        row = {"index_code": index_code, "n_seeds": len(seeds), "reference_test_crisis_share": reference.loc[index_code, "test_crisis_share"]}
+
+        for column in ("agreement_test", "adjusted_rand_index", "crisis_jaccard", "test_crisis_share", "test_vix_f1"):
+            row.update({f"{column}_min": seeds[column].min(), f"{column}_max": seeds[column].max()})
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+# Pearson and Spearman correlation of the threshold network's density with mu over every window, per market and window length: the check that threshold density is the market-mode proxy.
+def density_mu():
+    windows = pd.read_csv(config.OUTPUTS_DIR / "network_topology" / "window_topology.csv")
+    threshold = windows[windows["graph_type"] == "threshold"]
+    return pd.DataFrame([{"index_code": index_code, "window_length": window_length, "n_windows": len(cell), "pearson": cell["density"].corr(cell["mu"]), "spearman": cell["density"].corr(cell["mu"], method="spearman")}
+                         for (index_code, window_length), cell in threshold.groupby(["index_code", "window_length"], sort=False)])
+
+
+# Headline portfolio metrics per market, construction and strategy over the full test period, gross and net of transaction costs, with each strategy's average exposure and turnover.
 def portfolio_performance():
-    return pd.read_csv(config.OUTPUTS_DIR / "portfolio" / "metrics.csv")[["index_code", "sample", "strategy", *HEADLINE_METRICS]]
-
-
-# Forecast quality per market on test windows: log and Brier scores of each one-step regime forecast against the next window's regime (all windows, and those before a regime change), and QLIKE of each volatility-targeting strategy's forecast against its holding period's realised volatility.
-def forecast_scores():
-    return pd.read_csv(config.OUTPUTS_DIR / "portfolio" / "forecast_scores.csv")
+    keys = ["index_code", "graph_type", "strategy"]
+    metrics = pd.read_csv(config.OUTPUTS_DIR / "portfolio" / "metrics.csv")[[*keys[:2], "costs", keys[2], *HEADLINE_METRICS]]
+    exposure = pd.read_csv(config.OUTPUTS_DIR / "portfolio" / "exposure.csv")[[*keys, "time_in_market", "turnover"]].rename(columns={"time_in_market": "average_exposure"})
+    return metrics.merge(exposure, on=keys, how="left")
 
 
 # For every grid point, the number of regimes with the lowest HMM AIC and whether that minimum is interior to the searched range, how far the AIC at the chosen number of regimes lies above it, and the relative fall in K-means inertia into and out of the chosen number.
@@ -128,9 +208,8 @@ def model_selection():
 
 # Every paper table's name and the function that builds it, in the order they are written.
 def table_builders():
-    return {"data_summary": data_summary, "experimental_grid": experimental_grid, "sp500_f1": sp500_f1, "cross_market_persistence": cross_market_persistence,
-            "descriptor_f1": descriptor_f1, "network_diagnostics": network_diagnostics, "geometry_oov": geometry_oov, "portfolio_performance": portfolio_performance,
-            "forecast_scores": forecast_scores, "model_selection": model_selection}
+    return {"data_summary": data_summary, "experimental_grid": experimental_grid, "cross_market_persistence": cross_market_persistence,
+            "descriptor_benchmark": descriptor_benchmark, "mu_rule_agreement": mu_rule_agreement, "transition_structure": transition_structure, "regime_profile": regime_profile, "density_mu": density_mu, "geometry_separation": geometry_separation, "seed_robustness": seed_robustness, "vix_lag": vix_lag, "portfolio_performance": portfolio_performance, "model_selection": model_selection}
 
 
 # A booktabs tabular of the table with floats at TABLE_DECIMALS decimals and missing values as "--", ready to wrap in a LaTeX table environment.

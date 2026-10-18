@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this code or data, please cite it as below."
-title: "Regime Detection in Financial Markets using Machine Learning"
+title: "Market Regime Detection from Dynamic Financial Networks"
 type: software
 # RELEASE: add each author's ORCID as an `orcid: "https://orcid.org/0000-0000-0000-0000"` line.
 authors:
@@ -14,9 +14,9 @@ authors:
     family-names: "Caccioli"
     affiliation: "University College London"
 license: MIT
-version: 0.1.0
+version: 0.2.0
 repository-code: "https://github.com/AbbinavSK/Regime-Detection-from-Financial-Networks"
-date-released: "2026-10-07"
+date-released: "2026-10-18"
 # RELEASE: uncomment and fill in once an archived release has a DOI:
 # doi: "10.5281/zenodo.NNNNNNN"
 # RELEASE: once the paper is published, add a preferred-citation block pointing to it.
